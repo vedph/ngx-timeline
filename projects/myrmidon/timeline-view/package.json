@@ -1,0 +1,27 @@
+{
+  "name": "@myrmidon/timeline-view",
+  "version": "0.0.1",
+  "description": "Interactive, SVG-based timeline view component for Angular.",
+  "keywords": [
+    "timeline",
+    "chronology",
+    "svg",
+    "angular"
+  ],
+  "author": {
+    "name": "Daniele Fusi"
+  },
+  "peerDependencies": {
+    "@angular/common": "^22.3.0",
+    "@angular/core": "^22.3.0",
+    "@angular/forms": "^22.3.0",
+    "@myrmidon/ngx-tools": "^3.0.2"
+  },
+  "dependencies": {
+    "tslib": "^2.3.0"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/public-api.ts"
+  }
+}

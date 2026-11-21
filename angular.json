@@ -29,9 +29,7 @@
                 "input": "public"
               }
             ],
-            "styles": [
-              "src/styles.scss"
-            ]
+            "styles": ["src/styles.scss"]
           },
           "configurations": {
             "production": {
@@ -71,6 +69,35 @@
         },
         "test": {
           "builder": "@angular/build:unit-test"
+        }
+      }
+    },
+    "@myrmidon/timeline-view": {
+      "projectType": "library",
+      "root": "projects/myrmidon/timeline-view",
+      "sourceRoot": "projects/myrmidon/timeline-view",
+      "prefix": "tm",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:library",
+          "options": {
+            "tsConfig": "projects/myrmidon/timeline-view/tsconfig.lib.json",
+            "outputPath": "dist/myrmidon/timeline-view"
+          },
+          "configurations": {
+            "production": {},
+            "development": {
+              "compilationMode": "full",
+              "declarationMap": true
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "test": {
+          "builder": "@angular/build:unit-test",
+          "options": {
+            "tsConfig": "projects/myrmidon/timeline-view/tsconfig.spec.json"
+          }
         }
       }
     }

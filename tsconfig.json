@@ -3,6 +3,9 @@
 {
   "compileOnSave": false,
   "compilerOptions": {
+    "paths": {
+      "@myrmidon/timeline-view": ["./dist/myrmidon/timeline-view"]
+    },
     "noImplicitOverride": true,
     "noPropertyAccessFromIndexSignature": true,
     "noImplicitReturns": true,
@@ -26,6 +29,12 @@
     },
     {
       "path": "./tsconfig.spec.json"
+    },
+    {
+      "path": "./projects/myrmidon/timeline-view/tsconfig.lib.json"
+    },
+    {
+      "path": "./projects/myrmidon/timeline-view/tsconfig.spec.json"
     }
   ]
 }

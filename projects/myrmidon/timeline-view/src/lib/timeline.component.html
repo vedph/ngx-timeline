@@ -1,0 +1,175 @@
+<div class="tm-plot" #plot>
+  <svg
+    #svg
+    class="tm-svg"
+    [class.tm-dragging]="dragging()"
+    role="group"
+    aria-roledescription="timeline"
+    [attr.aria-label]="label()"
+    [attr.aria-describedby]="id + '-help'"
+    [attr.tabindex]="renderItems().length ? -1 : 0"
+    (keydown)="onKeydown($event)"
+    (wheel)="onWheel($event)"
+    (pointerdown)="onPointerDown($event)"
+    (pointermove)="onPointerMove($event)"
+    (pointerup)="onPointerUp($event)"
+    (pointercancel)="onPointerUp($event)"
+  >
+    <!-- highlighted ranges -->
+    @for (h of hilites(); track h.key) {
+      <g class="tm-hilite">
+        <rect
+          class="tm-hilite-band"
+          [attr.x]="h.x"
+          [attr.y]="h.y"
+          [attr.width]="h.width"
+          [attr.height]="h.height"
+          [style.fill]="h.color"
+        >
+          <title>{{ h.title }}</title>
+        </rect>
+        @if (h.text) {
+          <text
+            class="tm-hilite-label"
+            [attr.x]="h.textX"
+            [attr.y]="h.textY"
+            [attr.text-anchor]="h.textAnchor"
+            [attr.dominant-baseline]="h.textBaseline"
+            aria-hidden="true"
+          >
+            {{ h.text }}
+          </text>
+        }
+      </g>
+    }
+
+    <!-- ruler -->
+    @if (ruler()) {
+      <g
+        tmTimelineRuler
+        [ticks]="ticks()"
+        [orientation]="orientation()"
+        [base]="geometry().rulerBase"
+        [dir]="geometry().rulerDir"
+        [start]="geometry().plotStart"
+        [end]="geometry().plotEnd"
+      ></g>
+    }
+
+    <!-- axis -->
+    @let ax = axis();
+    <line
+      class="tm-axis"
+      [attr.x1]="ax.x1"
+      [attr.y1]="ax.y1"
+      [attr.x2]="ax.x2"
+      [attr.y2]="ax.y2"
+    />
+
+    <!-- connectors and group brackets (behind boxes) -->
+    <g class="tm-connectors" aria-hidden="true">
+      @for (it of renderItems(); track it.key) {
+        @if (it.bracket; as b) {
+          <line
+            class="tm-bracket"
+            [attr.x1]="b.x1"
+            [attr.y1]="b.y1"
+            [attr.x2]="b.x2"
+            [attr.y2]="b.y2"
+          />
+        }
+        <line
+          class="tm-connector"
+          [class.tm-connector-selected]="it.selected"
+          [attr.x1]="it.connector.x1"
+          [attr.y1]="it.connector.y1"
+          [attr.x2]="it.connector.x2"
+          [attr.y2]="it.connector.y2"
+        />
+        <circle
+          class="tm-anchor"
+          [attr.cx]="it.connector.x1"
+          [attr.cy]="it.connector.y1"
+          r="3"
+        />
+      }
+    </g>
+
+    <!-- points and groups -->
+    <g class="tm-items">
+      @for (it of renderItems(); track it.key) {
+        <g
+          tmTimelineItem
+          [item]="it"
+          [focusable]="it.key === activeKey()"
+          (activated)="onItemActivate(it, $event)"
+          (itemFocus)="onItemFocus(it)"
+        ></g>
+      }
+    </g>
+
+    <!-- scroll buttons -->
+    @if (canScrollLow()) {
+      <g
+        class="tm-scroll"
+        role="button"
+        tabindex="0"
+        [attr.aria-label]="ax.lowLabel"
+        (click)="scrollScreen(-1)"
+        (keydown.enter)="scrollScreen(-1); $event.preventDefault()"
+        (keydown.space)="scrollScreen(-1); $event.preventDefault()"
+        (pointerdown)="$event.stopPropagation()"
+      >
+        <title>{{ ax.lowLabel }}</title>
+        <circle class="tm-scroll-hit" [attr.cx]="ax.low.x" [attr.cy]="ax.low.y" r="12" />
+        <path class="tm-scroll-arrow" [attr.d]="ax.low.path" />
+      </g>
+    }
+    @if (canScrollHigh()) {
+      <g
+        class="tm-scroll"
+        role="button"
+        tabindex="0"
+        [attr.aria-label]="ax.highLabel"
+        (click)="scrollScreen(1)"
+        (keydown.enter)="scrollScreen(1); $event.preventDefault()"
+        (keydown.space)="scrollScreen(1); $event.preventDefault()"
+        (pointerdown)="$event.stopPropagation()"
+      >
+        <title>{{ ax.highLabel }}</title>
+        <circle class="tm-scroll-hit" [attr.cx]="ax.high.x" [attr.cy]="ax.high.y" r="12" />
+        <path class="tm-scroll-arrow" [attr.d]="ax.high.path" />
+      </g>
+    }
+  </svg>
+
+  <p class="tm-sr-only" [id]="id + '-help'">
+    Use the arrow keys to scroll, Page Up and Page Down to scroll by a larger
+    step, Control plus arrow keys to move between points, Home and End to go
+    to the first or last point, Enter or Space to select a point or to expand
+    a group, plus and minus to zoom, 0 to reset the zoom.
+  </p>
+  <p class="tm-sr-only" aria-live="polite">{{ selectionStatus() }}</p>
+</div>
+
+@if (toolbar()) {
+  <tm-timeline-toolbar
+    [selectionCount]="selection().length"
+    [zoomValue]="zoomSlider()"
+    [zoomText]="zoomText()"
+    [canResetZoom]="zoomLevel() > 1.0001"
+    [presets]="presetRanges()"
+    [presetIndex]="presetIndex()"
+    [customOpen]="customOpen()"
+    [parser]="effectiveParser()"
+    [customMin]="viewLabels().start"
+    [customMax]="viewLabels().end"
+    [viewText]="viewText()"
+    (clearSelection)="clearSelection()"
+    (zoomChange)="onZoomSlider($event)"
+    (resetZoom)="resetZoom()"
+    (presetSelect)="onPresetSelect($event)"
+    (customApply)="onCustomApply($event)"
+    (customClose)="customOpen.set(false)"
+  />
+}
