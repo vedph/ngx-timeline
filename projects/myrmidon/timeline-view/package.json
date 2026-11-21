@@ -8,6 +8,11 @@
     "svg",
     "angular"
   ],
+  "homepage": "https://github.com/vedph/ngx-timeline",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vedph/ngx-timeline"
+  },
   "author": {
     "name": "Daniele Fusi"
   },
