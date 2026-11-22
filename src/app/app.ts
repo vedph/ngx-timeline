@@ -2,6 +2,7 @@ import { Component, computed, linkedSignal, signal, viewChild } from '@angular/c
 import { form, FormField, max, min } from '@angular/forms/signals';
 import {
   TimelineComponent,
+  TimelineDataError,
   TimelineLayout,
   TimelineOrientation,
   TimelinePoint,
@@ -16,10 +17,14 @@ import {
   getClustersDataset,
   getHistoryDataset,
   getRandomDataset,
+  getVirtualDataset,
+  VIRTUAL_COUNT,
+  VIRTUAL_RANGE,
   YearTimelineParser,
 } from './demo-data';
+import { MockRequestInfo, MockTimelineDataSource } from './mock-timeline-data-source';
 
-type DatasetName = 'history' | 'random' | 'clusters';
+type DatasetName = 'history' | 'random' | 'clusters' | 'virtual';
 type ColorMode = 'none' | 'auto' | 'palette';
 type ShapeMode = 'data' | TimelinePointShape;
 type Theme = 'system' | 'light' | 'dark';
@@ -43,6 +48,9 @@ interface DemoSettings {
   maxZoom: number;
   maxLabelWidth: number;
   theme: Theme;
+  latency: number;
+  failures: boolean;
+  maxLoadSpan: number;
 }
 
 const PALETTE = [
@@ -90,6 +98,9 @@ export class App {
     maxZoom: 200,
     maxLabelWidth: 160,
     theme: 'system',
+    latency: 600,
+    failures: false,
+    maxLoadSpan: 300,
   });
 
   protected readonly settingsForm = form(this.settings, (p) => {
@@ -99,12 +110,27 @@ export class App {
     max(p.maxZoom, 100000);
     min(p.maxLabelWidth, 24);
     max(p.maxLabelWidth, 600);
+    min(p.latency, 0);
+    max(p.latency, 10000);
+    min(p.maxLoadSpan, 0);
   });
 
   protected readonly theme = computed(() => this.settings().theme);
 
+  // only the settings defining the data, so that changing other settings
+  // does not rebuild the dataset (and reset the view)
+  private readonly _datasetKey = computed(
+    () => {
+      const { dataset, count, seed } = this.settings();
+      return { dataset, count, seed };
+    },
+    {
+      equal: (a, b) => a.dataset === b.dataset && a.count === b.count && a.seed === b.seed,
+    },
+  );
+
   private readonly _dataset = computed<DemoDataset>(() => {
-    const s = this.settings();
+    const s = this._datasetKey();
     switch (s.dataset) {
       case 'random':
         return getRandomDataset(
@@ -113,6 +139,8 @@ export class App {
         );
       case 'clusters':
         return getClustersDataset();
+      case 'virtual':
+        return getVirtualDataset();
       default:
         return getHistoryDataset();
     }
@@ -140,9 +168,35 @@ export class App {
     this.settings().hilites ? this._dataset().hilites : [],
   );
 
+  // a data source requires an explicit total range
   protected readonly timelineRange = computed(() =>
-    this.settings().totalRange ? this._dataset().timelineRange : undefined,
+    this.settings().totalRange || this._dataset().virtual
+      ? this._dataset().timelineRange
+      : undefined,
   );
+
+  /**
+   * The mock service simulating a remote database. It is created once, so
+   * that changing the latency does not discard the loaded points.
+   */
+  private readonly _mockSource = new MockTimelineDataSource({
+    count: VIRTUAL_COUNT,
+    start: VIRTUAL_RANGE.start,
+    end: VIRTUAL_RANGE.end,
+    seed: 2026,
+    latency: () => this.settings().latency || 0,
+    failureRate: () => (this.settings().failures ? 0.3 : 0),
+    format: (v) => this._yearParser.format(v),
+    onRequest: (info) => this.onMockRequest(info),
+  });
+
+  protected readonly dataSource = computed(() =>
+    this._dataset().virtual ? this._mockSource : undefined,
+  );
+
+  protected readonly virtualCount = this._mockSource.count;
+
+  protected readonly loading = computed(() => this._timeline()?.loading() ?? false);
 
   protected readonly parser = computed(() =>
     this._dataset().years ? this._yearParser : undefined,
@@ -151,7 +205,7 @@ export class App {
   // view and selection are reset when the data change
   protected readonly viewRange = linkedSignal<DemoDataset, TimelineRange | undefined>({
     source: this._dataset,
-    computation: () => undefined,
+    computation: (dataset) => dataset.initialView,
   });
 
   protected readonly selection = linkedSignal<TimelinePoint[], TimelinePoint[]>({
@@ -188,6 +242,27 @@ export class App {
     this.addLog(
       range ? `viewRangeChange: ${range.start.label} – ${range.end.label}` : 'viewRangeChange: (all)',
     );
+  }
+
+  private onMockRequest(info: MockRequestInfo): void {
+    const range = `${info.range.start.label} – ${info.range.end.label}`;
+    this.addLog(
+      info.outcome === 'ok'
+        ? `getPoints: ${range} → ${info.count} point(s) in ${info.ms} ms`
+        : `getPoints: ${range} ${info.outcome}`,
+    );
+  }
+
+  protected onLoadError(error: TimelineDataError): void {
+    this.addLog(
+      `loadError: ${error.range.start.label} – ${error.range.end.label} ` +
+        `(${error.error instanceof Error ? error.error.message : error.error}); ` +
+        'it will be retried at the next view change',
+    );
+  }
+
+  protected reload(): void {
+    this._timeline()?.reload();
   }
 
   protected onSelectionChange(points: TimelinePoint[]): void {

@@ -21,6 +21,7 @@ An interactive, SVG-based timeline view for Angular 22+: zoneless, signal-based,
     - [Preset and Custom Ranges](#preset-and-custom-ranges)
     - [Highlighted Ranges](#highlighted-ranges)
     - [Programmatic Control](#programmatic-control)
+    - [Virtual Data (Loading on Demand)](#virtual-data-loading-on-demand)
     - [Theming](#theming)
   - [User Interaction](#user-interaction)
   - [Accessibility](#accessibility)
@@ -43,6 +44,7 @@ An interactive, SVG-based timeline view for Angular 22+: zoneless, signal-based,
 - single, range or sparse selection.
 - preset view ranges, including a custom range typed by users and parsed by a pluggable parser.
 - highlighted (background) ranges.
+- optional _virtual data_: points loaded on demand from a service while zooming and scrolling, for timelines with many thousands of points.
 - fills its container and adapts to resizing.
 - themed via CSS variables, with automatic light/dark defaults.
 - keyboard accessible, with a roving tab stop, ARIA toggle buttons and live announcements.
@@ -181,7 +183,7 @@ or with explicit events:
 />
 ```
 
-`viewRangeChange` fires on every zoom or scroll step, also while dragging or wheeling. Debounce it in your code if you trigger expensive work (e.g. fetching data).
+`viewRangeChange` fires on every zoom or scroll step, also while dragging or wheeling. Debounce it in your code if you trigger expensive work. To fetch points as the view changes, prefer a [data source](#virtual-data-loading-on-demand), which already debounces requests and loads only what is missing.
 
 ### Dates
 
@@ -265,6 +267,131 @@ focus(value: number) { this.timeline().centerOn(value); }
 
 Alternatively, just set `viewRange`.
 
+### Virtual Data (Loading on Demand)
+
+With many thousands of points, loading all of them upfront can be slow. Instead, the timeline can load points from a **data source** as the user zooms and scrolls. Only the points needed for the view are requested, and each part of the timeline is requested only once.
+
+#### How It Works
+
+1. you give the timeline a `dataSource`, an explicit `timelineRange` (the total extent of your data), and an initial `viewRange` covering a small part of it.
+2. the timeline computes the _load target_: the view, plus a margin of `loadMargin` × the view span on each side (default 0.5, i.e. half a view before and after), so that small scrolls need no request.
+3. it subtracts from the target the ranges already loaded and those being loaded, and calls `getPoints` once for each remaining gap. For example, after loading 1400–1500, scrolling to 1450–1550 requests only 1500–1550.
+4. while any request is in flight, a progress bar is shown at the top of the plot, and the plot has `aria-busy="true"`.
+5. received points are cached and displayed as soon as they arrive. Points are deduplicated by `id`.
+
+Requests are **debounced**: while the view keeps changing (dragging, wheeling, pinching), nothing is requested. The missing gaps are requested once the view stays still for `loadDebounce` milliseconds (default 300). The first load, and the first load after the data source changes, are immediate.
+
+Requests in flight are **not** cancelled when the view changes, because their results are still valid and will be cached. They are aborted (via the `AbortSignal` passed to `getPoints`) only when the data source changes, when `reload()` is called, and when the timeline is destroyed. Late results of aborted requests are ignored.
+
+If a request fails, `loadError` is emitted and its range is not marked as loaded, so it is requested again at the next view change.
+
+When the view is zoomed out to the whole timeline, the whole timeline is needed, so everything would be loaded. To prevent this, set `maxLoadSpan` (in value units): when the view is wider than it, nothing is loaded, and the timeline shows (and announces) the message "Zoom in to load the points". The margin is also reduced so that the load target is never wider than `maxLoadSpan`. Points already loaded stay visible.
+
+#### Example
+
+```ts
+const range = (start: number, end: number): TimelineRange => ({
+  start: { label: String(start), value: start },
+  end: { label: String(end), value: end },
+});
+
+@Component({
+  selector: 'app-archive',
+  imports: [TimelineComponent],
+  template: `
+    <tm-timeline
+      [dataSource]="source"
+      [timelineRange]="total"
+      [(viewRange)]="view"
+      [maxLoadSpan]="300"
+      (loadError)="onLoadError($event)"
+      ruler
+    />
+  `,
+})
+export class ArchiveComponent {
+  protected readonly source = inject(ArchiveTimelineSource);
+  // required: the total range does not depend on the loaded points
+  protected readonly total: TimelineRange = range(-3000, 2025);
+  // start with a small part of the timeline
+  protected readonly view = signal<TimelineRange | undefined>(range(1400, 1500));
+
+  protected onLoadError(e: TimelineDataError): void {
+    console.error(`Could not load ${e.range.start.label}–${e.range.end.label}`, e.error);
+  }
+}
+```
+
+When `dataSource` is set:
+
+- the `points` input is ignored.
+- `timelineRange` should be set. Otherwise, the total range would be computed from the points loaded so far, and change while loading (a warning is logged in development mode).
+- `fixedStep` is not applied, because the position of each point would depend on all the points, including those not loaded yet, and would shift while loading.
+- in `range` selection mode, contiguity is computed over the loaded points.
+- loaded points are never evicted, so memory grows with the explored part of the timeline. Call `reload()` to discard them, e.g. when the data behind the source changed. Replacing the `dataSource` with another object discards them too, so keep the same instance as long as the data do not change.
+
+#### Implementing a Data Source
+
+A data source implements `TimelineDataSource`, whose single method returns the points inside a range:
+
+```ts
+interface TimelineDataSource {
+  getPoints(
+    range: TimelineRange,
+    signal: AbortSignal,
+  ): Promise<TimelinePoint[]> | TimelineSubscribable<TimelinePoint[]>;
+}
+```
+
+The timeline does all the bookkeeping (what is loaded, what is missing, debouncing, deduplication), so a data source can be stateless: just query your backend for the points in the range. The rules are:
+
+- return the points with `range.start.value <= value <= range.end.value`. Bounds are inclusive, so a point on the boundary between two requests may be returned twice: this is harmless.
+- every point **must** have a unique and stable `id`. Points with an ID already received are ignored. Points without an ID get a unique negative ID, but cannot be deduplicated.
+- return a `Promise`, or a subscribable such as an RxJS `Observable` (`TimelineSubscribable` is a minimal interface, structurally compatible with `Observable`, so the library does not depend on RxJS). An observable may emit several batches (e.g. pages): each batch is displayed as it arrives, and the range is marked as loaded when the observable completes. With an observable, the timeline unsubscribes when the request is aborted.
+- honor the `signal` to cancel work which is no longer needed (e.g. pass it to `fetch`).
+- reject the promise (or error the observable) on failures. Points emitted before an error are kept, but the range is requested again later.
+- `range.start.label` and `range.end.label` are formatted with the timeline's parser, if you need them. Use the `value`s for queries.
+
+A data source using `fetch`:
+
+```ts
+@Service()
+export class ArchiveTimelineSource implements TimelineDataSource {
+  public async getPoints(range: TimelineRange, signal: AbortSignal): Promise<TimelinePoint[]> {
+    const url = `/api/events?from=${range.start.value}&to=${range.end.value}`;
+    const response = await fetch(url, { signal });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const events: { id: number; title: string; year: number }[] = await response.json();
+    return events.map((e) => ({ id: e.id, label: e.title, value: e.year }));
+  }
+}
+```
+
+A data source using Angular's `HttpClient`, which returns an observable (unsubscribing cancels the HTTP request, so the signal can be ignored):
+
+```ts
+@Service()
+export class ArchiveTimelineSource implements TimelineDataSource {
+  private readonly _http = inject(HttpClient);
+
+  public getPoints(range: TimelineRange): Observable<TimelinePoint[]> {
+    return this._http
+      .get<ArchiveEvent[]>('/api/events', {
+        params: { from: range.start.value, to: range.end.value },
+      })
+      .pipe(map((events) => events.map((e) => ({ id: e.id, label: e.title, value: e.year }))));
+  }
+}
+```
+
+On the server side, an index on the value column makes range queries fast. Since a wide view can contain many points, consider limiting the result size there too, or setting `maxLoadSpan` on the timeline.
+
+The demo app includes a mock data source (`src/app/mock-timeline-data-source.ts`) simulating a service with 50,000 points, a configurable latency and random failures. It uses `lowerBound` and `upperBound` (exported by this library) to slice its sorted points.
+
+Under the hood, the component uses `TimelineDataLoader`, a plain class exported for reuse and testing, which implements the caching, the gap computation (`getIntervalGaps`, `mergeIntervals`), the debouncing and the cancellation.
+
 ### Theming
 
 All colors come from CSS custom properties defined on the `tm-timeline` host. Their defaults use `light-dark()`, so they follow the `color-scheme` of the page. Set `color-scheme: light dark` (or `dark`) on a container or on `:root` to get dark defaults. To customize, override the variables:
@@ -303,6 +430,7 @@ The mouse wheel zooms, keeping the value under the pointer fixed. When the zoom 
 - the toolbar uses native, labelled controls. Unavailable buttons use `aria-disabled` rather than `disabled`, so they don't lose focus.
 - focus indicators use `--tm-focus-color`. The default colors meet WCAG AA contrast in both light and dark schemes.
 - the ruler is decorative (`aria-hidden`), because the view range is shown as text in the toolbar.
+- with a data source, loading is shown by an indeterminate `progressbar` named "Loading points", and the plot gets `aria-busy="true"`. The progress bar does not animate when `prefers-reduced-motion` is set. The "Zoom in to load the points" message is in a `status` live region.
 
 ## Reference
 
@@ -331,6 +459,10 @@ Selector: `tm-timeline`.
 | `maxLabelWidth` | `number`                                           | `160`           | the maximum label width in pixels (labels are truncated beyond it).                                      |
 | `label`         | `string`                                           | `'Timeline'`    | the accessible name of the timeline.                                                                     |
 | `toolbar`       | `boolean`                                          | `true`          | show the toolbar.                                                                                        |
+| `dataSource`    | `TimelineDataSource \| undefined`                  | `undefined`     | load points on demand from this source ([virtual data](#virtual-data-loading-on-demand)).                |
+| `loadDebounce`  | `number`                                           | `300`           | the time (ms) the view must stay still before missing points are requested.                              |
+| `loadMargin`    | `number`                                           | `0.5`           | the fraction of the view span loaded in advance on each side of the view.                                |
+| `maxLoadSpan`   | `number \| undefined`                              | `undefined`     | the widest view span (in values) for which points are loaded. Undefined or 0 = no limit.                 |
 
 **Outputs**
 
@@ -338,6 +470,13 @@ Selector: `tm-timeline`.
 | ----------------- | ---------------------------- | -------------------------------------------------------- |
 | `selectionChange` | `TimelinePoint[]`            | the selection changed (points have their `id` set).      |
 | `viewRangeChange` | `TimelineRange \| undefined` | the view range changed by zooming, scrolling or presets. |
+| `loadError`       | `TimelineDataError`          | loading a range from the data source failed.             |
+
+**Signals**
+
+| name      | type              | description                                          |
+| --------- | ----------------- | ---------------------------------------------------- |
+| `loading` | `Signal<boolean>` | true while points are loaded from the data source.   |
 
 **Methods**
 
@@ -349,6 +488,7 @@ Selector: `tm-timeline`.
 | `scrollBy(fraction)`           | scroll by a fraction of the view span. Positive = toward higher values.     |
 | `centerOn(value)`              | center the view on a value, keeping the zoom.                               |
 | `clearSelection()`             | clear the selection.                                                        |
+| `reload()`                     | discard the points loaded from the data source and load the view again.     |
 
 ### Models
 
@@ -358,6 +498,9 @@ Selector: `tm-timeline`.
 - `DecoratedTimelineRange`: `TimelineRange & { label: string; color?: string }`.
 - `TimelineParser`: `{ parse(text): TimelineRange | null; format?(value, step?): string }`.
 - `TIMELINE_PARSER`: an injection token for a default parser.
+- `TimelineDataSource`: `{ getPoints(range, signal): Promise<TimelinePoint[]> | TimelineSubscribable<TimelinePoint[]> }`.
+- `TimelineSubscribable<T>`: a minimal subscribable, compatible with RxJS `Observable`.
+- `TimelineDataError`: `{ range: TimelineRange; error: unknown }`.
 - types: `TimelineOrientation`, `TimelineSort`, `TimelineLayout`, `TimelineSelectionMode`, `TimelinePointShape`.
 
 ### Services
@@ -376,6 +519,8 @@ These are pure functions and classes, exported for reuse and testing:
 - layout: `layoutTimelineItems(entries, options)`, `getTierCount(...)`.
 - selection: `toggleTimelineSelection(mode, ordered, current, target)`, `addToTimelineSelection(mode, ordered, current, targets)`.
 - points: `normalizeTimelinePoints`, `sortTimelinePoints`, `compareTimelinePoints`, `isCustomTimelineRange`, `lowerBound`, `upperBound`.
+- coverage: `mergeIntervals(intervals)`, `getIntervalGaps(target, covered, epsilon?)`.
+- `TimelineDataLoader`: loads points on demand from a data source, with caching, gap computation, debouncing and cancellation (`update(source, target, debounceMs)`, `reload()`, `destroy()`, `points`, `loading`).
 - `TIMELINE_METRICS`: the pixel metrics used for the layout (box height, paddings, gaps...).
 
 The sub-components (`TimelineToolbarComponent`, `TimelineCustomRangeComponent`, `TimelineItemComponent`, `TimelineRulerComponent`) are exported too, but they are building blocks of `tm-timeline` rather than a stable public API.
@@ -406,6 +551,8 @@ Font sizes are fixed (12px labels, 10px ruler) because they are part of the layo
 - **Semantic zoom, no pan-zoom library.** Generic SVG pan/zoom libraries (e.g. `svg-pan-zoom`) scale the whole drawing, so labels and strokes grow or shrink and become unreadable. Here the view range drives a linear scale, and the SVG is redrawn at constant size. Gestures are handled with native pointer and wheel events, so there are no extra dependencies and it works zoneless.
 - **Signals everywhere.** All derived state (projection, geometry, layout, ticks) is a chain of `computed()` signals. They are lazy and glitch-free, so separate inputs cannot cause intermediate inconsistent renders, and there is no need to group layout inputs into a single options object.
 - **Value-based public API.** Whatever the projection mode, the API speaks in values. `TimelineProjection` hides the slot/value mapping.
+- **The timeline owns the load bookkeeping.** A data source receives only the missing ranges, rather than the required and current ranges, so it does not need to know what the timeline already has. This keeps data sources stateless and trivial to write, and keeps caching, deduplication, debouncing and cancellation consistent and tested in one place (`TimelineDataLoader`).
+- **Incremental measuring.** Label measurements are cached per point object, so when new points arrive only those are measured.
 - **Signal Forms.** The custom range form uses `@angular/forms/signals` with schema validation.
 
 ## Development

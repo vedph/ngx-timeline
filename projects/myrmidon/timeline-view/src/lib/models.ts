@@ -109,6 +109,55 @@ export interface TimelineParser {
 }
 
 /**
+ * A minimal subscribable, structurally compatible with an RxJS
+ * `Observable`. It lets data sources return observables without making
+ * RxJS a dependency of the library.
+ */
+export interface TimelineSubscribable<T> {
+  subscribe(observer: {
+    next?: (value: T) => void;
+    error?: (error: unknown) => void;
+    complete?: () => void;
+  }): { unsubscribe(): void };
+}
+
+/**
+ * A source of timeline points loaded on demand ("virtual data"). The
+ * timeline keeps track of the value ranges it has already loaded, and asks
+ * the source only for the missing ones, so the source can be stateless.
+ */
+export interface TimelineDataSource {
+  /**
+   * Get the points whose value is inside the specified range (both bounds
+   * included). Every point MUST have a unique, stable `id`: points whose
+   * ID was already received are ignored, so overlapping results are safe.
+   *
+   * @param range The range to load. It never includes a range already
+   * loaded, or being loaded.
+   * @param signal An abort signal, triggered when the result is no longer
+   * needed (e.g. the source was replaced, or the timeline destroyed).
+   * @returns A promise resolving to the points, or a subscribable (e.g.
+   * an RxJS observable). A subscribable can emit points in several
+   * batches: each batch is displayed as soon as it arrives, and the range
+   * is considered loaded when it completes.
+   */
+  getPoints(
+    range: TimelineRange,
+    signal: AbortSignal,
+  ): Promise<TimelinePoint[]> | TimelineSubscribable<TimelinePoint[]>;
+}
+
+/**
+ * An error which occurred while loading points from a data source.
+ */
+export interface TimelineDataError {
+  /** The range being loaded. */
+  range: TimelineRange;
+  /** The error. */
+  error: unknown;
+}
+
+/**
  * An optional injection token to provide a default parser to all the
  * timeline components in an injector. The `parser` input takes precedence.
  */

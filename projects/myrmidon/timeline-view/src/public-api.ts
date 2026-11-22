@@ -5,6 +5,8 @@
 export * from './lib/models';
 
 export * from './lib/utils/numeric-timeline-parser';
+export * from './lib/utils/timeline-coverage';
+export * from './lib/utils/timeline-data-loader';
 export * from './lib/utils/timeline-interval';
 export * from './lib/utils/timeline-layout';
 export * from './lib/utils/timeline-points';

@@ -113,6 +113,12 @@ input[type='checkbox'] {
   outline-offset: 1px;
 }
 
+.note {
+  margin: 0 0 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--app-muted);
+}
+
 .buttons {
   display: flex;
   flex-wrap: wrap;

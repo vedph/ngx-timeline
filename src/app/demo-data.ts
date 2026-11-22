@@ -96,6 +96,10 @@ export interface DemoDataset {
   timelineRange?: TimelineRange;
   /** True if the dataset is about years and should use the year parser. */
   years: boolean;
+  /** The initial view range, if any. */
+  initialView?: TimelineRange;
+  /** True if points are loaded on demand from a data source. */
+  virtual?: boolean;
 }
 
 const HISTORY: [number, string, string][] = [
@@ -169,6 +173,40 @@ export function getHistoryDataset(): DemoDataset {
       { label: 'Middle Ages', ...r(476, 1492) },
       { label: 'Early modern', ...r(1492, 1789) },
       { label: 'Last two centuries', ...r(1800, 2000) },
+      CUSTOM,
+    ],
+  };
+}
+
+/** The total range of the virtual dataset. */
+export const VIRTUAL_RANGE = { start: -3000, end: 2025 };
+
+/** The number of points in the virtual dataset. */
+export const VIRTUAL_COUNT = 50_000;
+
+/**
+ * Get the virtual dataset: its points are loaded on demand from a data
+ * source, so `points` is empty. The total range must be explicit, and the
+ * initial view is a small part of it, so that only a few points are loaded
+ * at startup.
+ */
+export function getVirtualDataset(): DemoDataset {
+  return {
+    years: true,
+    virtual: true,
+    points: [],
+    timelineRange: r(VIRTUAL_RANGE.start, VIRTUAL_RANGE.end),
+    initialView: r(1400, 1500),
+    hilites: [
+      { label: 'Bronze Age collapse', ...r(-1200, -1150), color: '#ffcf5a' },
+      { label: 'Classical antiquity', ...r(-800, 476), color: '#7aa7ff' },
+      { label: 'Renaissance', ...r(1400, 1600), color: '#ff9db0' },
+    ],
+    presets: [
+      { label: 'Fifteenth century', ...r(1401, 1500) },
+      { label: 'First century', ...r(1, 100) },
+      { label: 'Last fifty years', ...r(1975, 2025) },
+      { label: 'Whole millennium (not loaded)', ...r(1000, 2000) },
       CUSTOM,
     ],
   };

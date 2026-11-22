@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 
 import {
   DecoratedTimelineRange,
+  TimelineDataSource,
   TimelineParser,
   TimelinePoint,
   TimelineRange,
@@ -452,6 +453,159 @@ describe('TimelineComponent', () => {
       expect(r.end.value - r.start.value).toBeLessThan(100);
       await user.keyboard('0');
       expect(lastRange(viewRangeChange).end.value).toBe(100);
+    });
+  });
+
+  describe('virtual data', () => {
+    /** A source with a point every 10 units, resolved on demand. */
+    class TestSource implements TimelineDataSource {
+      public readonly requests: [number, number][] = [];
+      private readonly _resolvers: (() => void)[] = [];
+      public auto = true;
+      public fail = false;
+
+      public getPoints(range: TimelineRange): Promise<TimelinePoint[]> {
+        const { value: start } = range.start;
+        const { value: end } = range.end;
+        this.requests.push([start, end]);
+        const points: TimelinePoint[] = [];
+        for (let v = Math.ceil(start / 10) * 10; v <= end; v += 10) {
+          points.push({ id: v + 1, label: `V${v}`, value: v });
+        }
+        if (this.fail) {
+          return Promise.reject(new Error('unavailable'));
+        }
+        if (this.auto) {
+          return Promise.resolve(points);
+        }
+        return new Promise((resolve) =>
+          this._resolvers.push(() => resolve(points)),
+        );
+      }
+
+      public resolveAll(): void {
+        this._resolvers.splice(0).forEach((r) => r());
+      }
+    }
+
+    async function setupVirtual(
+      source: TestSource,
+      inputs: Partial<Record<string, unknown>> = {},
+    ) {
+      const loadError = vi.fn();
+      const viewRangeChange = vi.fn();
+      const values: Record<string, unknown> = {
+        points: POINTS,
+        dataSource: source,
+        timelineRange: range(0, 1000),
+        viewRange: range(100, 200),
+        loadDebounce: 0,
+        loadMargin: 0,
+        ...inputs,
+      };
+      const result = await render(TimelineComponent, {
+        bindings: [
+          ...Object.entries(values).map(([name, value]) =>
+            inputBinding(name, () => value),
+          ),
+          outputBinding('loadError', loadError),
+          outputBinding('viewRangeChange', viewRangeChange),
+        ],
+      });
+      return { ...result, loadError, viewRangeChange, user: userEvent.setup() };
+    }
+
+    it('should load and render the points of the view', async () => {
+      const source = new TestSource();
+      await setupVirtual(source);
+      expect(source.requests).toEqual([[100, 200]]);
+      expect(await screen.findByRole('button', { name: 'V150' })).toBeTruthy();
+      // the points input is ignored
+      expect(screen.queryByRole('button', { name: 'Alpha' })).toBeNull();
+    });
+
+    it('should load a margin around the view', async () => {
+      const source = new TestSource();
+      await setupVirtual(source, { loadMargin: 0.5 });
+      expect(source.requests).toEqual([[50, 250]]);
+    });
+
+    it('should show a progress bar while loading', async () => {
+      const source = new TestSource();
+      source.auto = false;
+      const { fixture } = await setupVirtual(source);
+      const bar = screen.getByRole('progressbar', { name: 'Loading points' });
+      expect(bar).toBeTruthy();
+      expect(
+        screen.getByRole('group', { name: 'Timeline' }).getAttribute('aria-busy'),
+      ).toBe('true');
+
+      source.resolveAll();
+      await fixture.whenStable();
+      expect(screen.queryByRole('progressbar')).toBeNull();
+      expect(screen.getByRole('button', { name: 'V150' })).toBeTruthy();
+    });
+
+    it('should load only the missing range when scrolling', async () => {
+      const source = new TestSource();
+      const { user } = await setupVirtual(source);
+      await screen.findByRole('button', { name: 'V150' });
+      await user.tab();
+      await user.keyboard('{ArrowRight}');
+      await screen.findByRole('button', { name: 'V210' });
+      expect(source.requests.length).toBe(2);
+      const [start, end] = source.requests[1];
+      expect(start).toBeCloseTo(200);
+      expect(end).toBeCloseTo(210);
+    });
+
+    it('should not load when the view is wider than maxLoadSpan', async () => {
+      const source = new TestSource();
+      await setupVirtual(source, { viewRange: undefined, maxLoadSpan: 300 });
+      expect(source.requests).toEqual([]);
+      expect(screen.getByRole('status').textContent).toContain(
+        'Zoom in to load the points',
+      );
+    });
+
+    it('should limit the margin to maxLoadSpan', async () => {
+      const source = new TestSource();
+      await setupVirtual(source, { loadMargin: 1, maxLoadSpan: 200 });
+      expect(source.requests).toEqual([[50, 250]]);
+    });
+
+    it('should emit loadError when loading fails', async () => {
+      const source = new TestSource();
+      source.fail = true;
+      const { fixture, loadError } = await setupVirtual(source);
+      await fixture.whenStable();
+      expect(loadError).toHaveBeenCalledTimes(1);
+      expect(loadError.mock.calls[0][0].range.start.value).toBe(100);
+      expect(screen.queryByRole('progressbar')).toBeNull();
+    });
+
+    it('should reload on demand', async () => {
+      const source = new TestSource();
+      const { fixture } = await setupVirtual(source);
+      await screen.findByRole('button', { name: 'V150' });
+      fixture.componentInstance.reload();
+      expect(source.requests).toEqual([
+        [100, 200],
+        [100, 200],
+      ]);
+    });
+
+    it('should ignore fixedStep', async () => {
+      const source = new TestSource();
+      const { viewRangeChange, user } = await setupVirtual(source, {
+        fixedStep: true,
+      });
+      await screen.findByRole('button', { name: 'V150' });
+      await user.tab();
+      await user.keyboard('{ArrowRight}');
+      // a linear scroll by 10% of the span
+      const r = lastRange(viewRangeChange);
+      expect(r.start.value).toBeCloseTo(110);
     });
   });
 });

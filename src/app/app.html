@@ -13,6 +13,7 @@
           <option value="history">History (years, custom parser)</option>
           <option value="random">Random numbers</option>
           <option value="clusters">Dense clusters</option>
+          <option value="virtual">Virtual: {{ virtualCount }} points on demand</option>
         </select>
       </label>
       @if (settings().dataset === 'random') {
@@ -25,22 +26,44 @@
           <input type="number" step="1" [formField]="settingsForm.seed" />
         </label>
       }
-      <label class="field">
-        <span>Colors</span>
-        <select [formField]="settingsForm.colors">
-          <option value="none">Theme default</option>
-          <option value="auto">auto (palette by ID)</option>
-          <option value="palette">Explicit colors</option>
-        </select>
-      </label>
-      <label class="field">
-        <span>Shapes</span>
-        <select [formField]="settingsForm.shapes">
-          <option value="data">From data</option>
-          <option value="rectangle">All rectangles</option>
-          <option value="oval">All ovals</option>
-        </select>
-      </label>
+      @if (settings().dataset === 'virtual') {
+        <p class="note">
+          Points are loaded from a mock service only for the view (plus a margin), and only when
+          missing. Colors and shapes come from the service; fixed step does not apply.
+        </p>
+        <label class="field">
+          <span>Latency (ms)</span>
+          <input type="number" step="100" [formField]="settingsForm.latency" />
+        </label>
+        <label class="field">
+          <span>Max load span (years, 0 = none)</span>
+          <input type="number" step="50" [formField]="settingsForm.maxLoadSpan" />
+        </label>
+        <label class="check">
+          <input type="checkbox" [formField]="settingsForm.failures" />
+          <span>Simulate failures (30%)</span>
+        </label>
+        <div class="buttons">
+          <button type="button" (click)="reload()">Reload data</button>
+        </div>
+      } @else {
+        <label class="field">
+          <span>Colors</span>
+          <select [formField]="settingsForm.colors">
+            <option value="none">Theme default</option>
+            <option value="auto">auto (palette by ID)</option>
+            <option value="palette">Explicit colors</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Shapes</span>
+          <select [formField]="settingsForm.shapes">
+            <option value="data">From data</option>
+            <option value="rectangle">All rectangles</option>
+            <option value="oval">All ovals</option>
+          </select>
+        </label>
+      }
       <label class="check">
         <input type="checkbox" [formField]="settingsForm.presets" />
         <span>Preset ranges</span>
@@ -152,6 +175,9 @@
       [parser]="parser()"
       [maxZoom]="settings().maxZoom || 1"
       [maxLabelWidth]="settings().maxLabelWidth || 160"
+      [dataSource]="dataSource()"
+      [maxLoadSpan]="settings().maxLoadSpan || undefined"
+      (loadError)="onLoadError($event)"
       [viewRange]="viewRange()"
       (viewRangeChange)="onViewRangeChange($event)"
       [selection]="selection()"
@@ -162,7 +188,11 @@
   <section class="app-status" aria-label="Timeline state">
     <dl>
       <dt>Points</dt>
-      <dd>{{ points().length }}</dd>
+      @if (dataSource()) {
+        <dd>{{ virtualCount }} on demand{{ loading() ? ' (loading…)' : '' }}</dd>
+      } @else {
+        <dd>{{ points().length }}</dd>
+      }
       <dt>View range</dt>
       <dd>{{ viewText() }}</dd>
       <dt>Selection</dt>

@@ -20,4 +20,17 @@ describe('App', () => {
     await user.click(point);
     expect(await screen.findByText('selectionChange: 1 point(s)')).toBeTruthy();
   });
+
+  it('should load the virtual dataset on demand', async () => {
+    const user = userEvent.setup();
+    await render(App);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Dataset' }), 'virtual');
+    // the mock service answers after its latency
+    expect(await screen.findByRole('progressbar', { name: 'Loading points' })).toBeTruthy();
+    expect(screen.getByRole('spinbutton', { name: 'Latency (ms)' })).toBeTruthy();
+    expect(
+      await screen.findByText(/^getPoints: .+ → \d+ point\(s\)/, {}, { timeout: 3000 }),
+    ).toBeTruthy();
+    expect(screen.queryByRole('progressbar')).toBeNull();
+  });
 });

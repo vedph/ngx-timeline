@@ -128,6 +128,61 @@
   stroke: var(--tm-focus-color);
 }
 
+/* on-demand loading */
+.tm-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--tm-accent-color) 20%, transparent);
+  pointer-events: none;
+}
+
+.tm-progress-bar {
+  width: 40%;
+  height: 100%;
+  background: var(--tm-accent-color);
+  animation: tm-progress 1.2s ease-in-out infinite;
+}
+
+@keyframes tm-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tm-progress-bar {
+    width: 100%;
+    animation: none;
+  }
+}
+
+.tm-load-hint {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  max-width: calc(100% - 16px);
+  box-sizing: border-box;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.tm-load-hint-on {
+  padding: 2px 8px;
+  border: 1px solid var(--tm-control-border);
+  border-radius: 4px;
+  background: var(--tm-control-bg);
+  color: var(--tm-control-fg);
+}
+
 .tm-sr-only {
   position: absolute;
   width: 1px;

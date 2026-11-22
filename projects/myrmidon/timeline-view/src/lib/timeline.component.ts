@@ -6,13 +6,16 @@ import {
   computed,
   DestroyRef,
   DOCUMENT,
+  effect,
   ElementRef,
   inject,
   Injector,
   input,
   model,
   numberAttribute,
+  output,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 
@@ -32,6 +35,8 @@ import {
 import {
   DecoratedTimelineRange,
   TIMELINE_PARSER,
+  TimelineDataError,
+  TimelineDataSource,
   TimelineLayout,
   TimelineOrientation,
   TimelineParser,
@@ -71,6 +76,7 @@ import {
   sortTimelinePoints,
   upperBound,
 } from './utils/timeline-points';
+import { TimelineDataLoader } from './utils/timeline-data-loader';
 import { TimelineProjection } from './utils/timeline-projection';
 import {
   addToTimelineSelection,
@@ -222,6 +228,35 @@ export class TimelineComponent {
   public readonly label = input('Timeline');
   /** True to show the toolbar. */
   public readonly toolbar = input(true, { transform: booleanAttribute });
+  /**
+   * The source of points loaded on demand. When set, the `points` input
+   * is ignored, `fixedStep` is not applied, and `timelineRange` should be
+   * set. See the documentation about virtual data.
+   */
+  public readonly dataSource = input<TimelineDataSource | undefined>(undefined);
+  /**
+   * The time in milliseconds the view must stay still before missing
+   * points are loaded from the data source.
+   */
+  public readonly loadDebounce = input(300, { transform: numberAttribute });
+  /**
+   * The fraction of the view span loaded in advance before and after the
+   * view, so that small scrolls do not require loading.
+   */
+  public readonly loadMargin = input(0.5, { transform: numberAttribute });
+  /**
+   * The maximum view span (in values) for which points are loaded from the
+   * data source. When the view is wider, nothing is loaded and users are
+   * invited to zoom in. Undefined or 0 = no limit.
+   */
+  public readonly maxLoadSpan = input<number | undefined>(undefined);
+
+  //#endregion
+
+  //#region outputs
+
+  /** Emitted when loading points from the data source fails. */
+  public readonly loadError = output<TimelineDataError>();
 
   //#endregion
 
@@ -249,6 +284,14 @@ export class TimelineComponent {
   private _suppressClick = false;
   private _focusWithin = false;
 
+  private readonly _loader = new TimelineDataLoader({
+    toRange: (i) => this.toRange(i.start, i.end),
+    onError: (e) => this.loadError.emit(e),
+  });
+
+  /** True while points are being loaded from the data source. */
+  public readonly loading = this._loader.loading;
+
   //#region data
 
   /** The effective parser. */
@@ -257,8 +300,12 @@ export class TimelineComponent {
   );
 
   /** The points with their IDs. */
-  protected readonly normalizedPoints = computed(() =>
-    normalizeTimelinePoints(this.points()),
+  protected readonly normalizedPoints = computed<
+    readonly TimelinePointWithId[]
+  >(() =>
+    this.dataSource()
+      ? this._loader.points()
+      : normalizeTimelinePoints(this.points()),
   );
 
   /** The points sorted by value. */
@@ -266,8 +313,9 @@ export class TimelineComponent {
     sortTimelinePoints(this.normalizedPoints()),
   );
 
+  // fixed step would make positions shift as points are loaded
   protected readonly projection = computed(() =>
-    this.fixedStep()
+    this.fixedStep() && !this.dataSource()
       ? TimelineProjection.fixed(this.sortedPoints().map((p) => p.value))
       : TimelineProjection.linear(),
   );
@@ -289,8 +337,8 @@ export class TimelineComponent {
       if (!sel?.length) {
         return [];
       }
-      const original = this.points();
       const normalized = this.normalizedPoints();
+      const original = this.dataSource() ? normalized : this.points();
       const byId = new Map(normalized.map((p) => [p.id, p]));
       const result: TimelinePointWithId[] = [];
       for (const s of sel) {
@@ -436,6 +484,46 @@ export class TimelineComponent {
     );
   });
 
+  /** True if the view is too wide to load points from the data source. */
+  protected readonly tooWideToLoad = computed(() => {
+    const max = this.maxLoadSpan();
+    const v = this.viewU();
+    return !!this.dataSource() && !!max && max > 0 && v.end - v.start > max;
+  });
+
+  /**
+   * The value interval to be loaded from the data source: the view plus
+   * a margin, inside the total range. Null when nothing must be loaded.
+   * Since fixed step is not applied with a data source, U = value.
+   */
+  private readonly _loadTarget = computed<Interval | null>(
+    () => {
+      if (!this.dataSource() || this.tooWideToLoad()) {
+        return null;
+      }
+      const v = this.viewU();
+      const total = this.totalU();
+      const span = v.end - v.start;
+      let margin = Math.max(0, this.loadMargin() || 0) * span;
+      const max = this.maxLoadSpan();
+      if (max && max > 0) {
+        margin = Math.min(margin, Math.max(0, (max - span) / 2));
+      }
+      return {
+        start: Math.max(total.start, v.start - margin),
+        end: Math.min(total.end, v.end + margin),
+      };
+    },
+    {
+      equal: (a, b) =>
+        a === b || (!!a && !!b && a.start === b.start && a.end === b.end),
+    },
+  );
+
+  protected readonly loadStatus = computed(() =>
+    this.tooWideToLoad() ? 'Zoom in to load the points' : '',
+  );
+
   protected readonly selectionStatus = computed(() => {
     const n = this._normalizedSelection().length;
     return n === 0
@@ -541,16 +629,33 @@ export class TimelineComponent {
     );
   });
 
+  /**
+   * A cache of measured labels, reset when the measurement parameters
+   * change. This avoids measuring all the points again when only some of
+   * them change, e.g. when new points are loaded from a data source.
+   */
+  private readonly _measureCache = computed(() => {
+    this._labelBudget();
+    this._fontFamily();
+    return new WeakMap<TimelinePointWithId, MeasuredLabel>();
+  });
+
   private readonly _measured = computed<MeasuredLabel[]>(() => {
     const budget = this._labelBudget();
     const font = this._fontFamily();
+    const cache = this._measureCache();
     return this.sortedPoints().map((p) => {
-      const t = this._measurer.truncate(p.label, budget, M.fontSize, font);
-      const extra = p.shape === 'oval' ? M.boxHeight * 0.5 : 0;
-      return {
-        text: t.text,
-        boxWidth: Math.ceil(t.width + 2 * M.paddingX + extra),
-      };
+      let m = cache.get(p);
+      if (!m) {
+        const t = this._measurer.truncate(p.label, budget, M.fontSize, font);
+        const extra = p.shape === 'oval' ? M.boxHeight * 0.5 : 0;
+        m = {
+          text: t.text,
+          boxWidth: Math.ceil(t.width + 2 * M.paddingX + extra),
+        };
+        cache.set(p, m);
+      }
+      return m;
     });
   });
 
@@ -830,6 +935,26 @@ export class TimelineComponent {
 
   constructor() {
     const destroyRef = inject(DestroyRef);
+    destroyRef.onDestroy(() => this._loader.destroy());
+
+    // load the missing points when the view changes
+    effect(() => {
+      const source = this.dataSource();
+      const target = this._loadTarget();
+      const debounce = this.loadDebounce();
+      untracked(() => this._loader.update(source, target, debounce));
+    });
+
+    if (typeof ngDevMode === 'undefined' || ngDevMode) {
+      effect(() => {
+        if (this.dataSource() && !this.timelineRange()) {
+          console.warn(
+            'tm-timeline: set timelineRange when using a dataSource, ' +
+              'otherwise the total range depends on the loaded points.',
+          );
+        }
+      });
+    }
     afterNextRender(() => {
       const el = this._plot().nativeElement;
       const rect = el.getBoundingClientRect();
@@ -874,6 +999,15 @@ export class TimelineComponent {
     return p.format ? p.format(value, step) : formatTimelineNumber(value, step);
   }
 
+  /** Build a range from two values, formatting their labels. */
+  private toRange(v0: number, v1: number): TimelineRange {
+    const step = Math.abs(v1 - v0) / 1000 || undefined;
+    return {
+      start: { label: this.formatValue(v0, step), value: v0 },
+      end: { label: this.formatValue(v1, step), value: v1 },
+    };
+  }
+
   private alongAxis(event: MouseEvent): number {
     const rect = this._svg().nativeElement.getBoundingClientRect();
     return this.geometry().horizontal
@@ -897,13 +1031,10 @@ export class TimelineComponent {
       return;
     }
     const proj = this.projection();
-    const v0 = proj.toValue(clamped.start);
-    const v1 = proj.toValue(clamped.end);
-    const step = Math.abs(v1 - v0) / 1000 || undefined;
-    const range: TimelineRange = {
-      start: { label: this.formatValue(v0, step), value: v0 },
-      end: { label: this.formatValue(v1, step), value: v1 },
-    };
+    const range = this.toRange(
+      proj.toValue(clamped.start),
+      proj.toValue(clamped.end),
+    );
     this._lastView = { range, projection: proj, u: clamped };
     this.viewRange.set(range);
   }
@@ -972,6 +1103,15 @@ export class TimelineComponent {
     const half = (v.end - v.start) / 2;
     const u = this.projection().toU(value);
     this.setViewU({ start: u - half, end: u + half });
+  }
+
+  /**
+   * Discard all the points loaded from the data source, and load again
+   * those required by the current view. Use it when the data behind the
+   * source changed.
+   */
+  public reload(): void {
+    this._loader.reload();
   }
 
   /** Clear the selection. */

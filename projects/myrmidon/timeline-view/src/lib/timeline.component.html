@@ -7,6 +7,7 @@
     aria-roledescription="timeline"
     [attr.aria-label]="label()"
     [attr.aria-describedby]="id + '-help'"
+    [attr.aria-busy]="loading() || null"
     [attr.tabindex]="renderItems().length ? -1 : 0"
     (keydown)="onKeydown($event)"
     (wheel)="onWheel($event)"
@@ -142,6 +143,16 @@
       </g>
     }
   </svg>
+
+  @if (loading()) {
+    <div class="tm-progress" role="progressbar" aria-label="Loading points">
+      <div class="tm-progress-bar"></div>
+    </div>
+  }
+  <!-- always rendered, so that its changes are announced -->
+  <p class="tm-load-hint" role="status" [class.tm-load-hint-on]="loadStatus()">
+    {{ loadStatus() }}
+  </p>
 
   <p class="tm-sr-only" [id]="id + '-help'">
     Use the arrow keys to scroll, Page Up and Page Down to scroll by a larger
